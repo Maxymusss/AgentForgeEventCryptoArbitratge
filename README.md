@@ -1,4 +1,4 @@
-# AgentForgeCryptoArbitrage
+# AgentForgeEventCryptoArbitrage
 
 > Crypto arbitrage opportunity detector — monitors Binance and Coinbase in real time.
 
