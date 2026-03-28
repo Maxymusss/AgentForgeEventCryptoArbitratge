@@ -5,6 +5,8 @@
 ![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
+<img width="1753" height="1131" alt="image" src="https://github.com/user-attachments/assets/8b075b21-b67e-4c27-b2b2-021ec76d6d4b" />
+
 ## What it does
 
 AgentForge connects to **Binance, Coinbase, Kraken, Bybit, OKX, and Gate.io** via their public REST APIs. For each trading pair it:
