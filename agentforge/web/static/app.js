@@ -7,6 +7,7 @@ const state = {};
 const pairs = new Set();
 let bestSpread = null;
 let lastUpdate = null;
+let arbFilter = 'all';  // 'all' | 'profit' | 'top5'
 
 const $ = (id) => document.getElementById(id);
 
@@ -139,6 +140,14 @@ function renderPriceGrid() {
 // Uses enriched opportunity data from backend WebSocket: volume_score, min_order,
 // and per-exchange fee breakdown.
 
+function setArbFilter(f) {
+    arbFilter = f;
+    document.querySelectorAll('.filter-row .filter-btn').forEach(btn => btn.classList.remove('active'));
+    const btn = document.getElementById('filter-' + f);
+    if (btn) btn.classList.add('active');
+    renderArbList();
+}
+
 function renderArbList() {
     const list = $('arb-list');
     const noOpps = $('no-opps');
@@ -155,8 +164,16 @@ function renderArbList() {
         }
     }
 
-    rows.sort((a, b) => b.raw_spread_pct - a.raw_spread_pct);
-    const top10 = rows.slice(0, 10);
+    // Apply arb filter
+    let filtered = rows;
+    if (arbFilter === 'profit') {
+        filtered = rows.filter(r => (r.profit_pct || 0) > 0);
+    } else if (arbFilter === 'top5') {
+        filtered = rows.slice(0, 5);
+    }
+
+    filtered.sort((a, b) => b.raw_spread_pct - a.raw_spread_pct);
+    const top10 = filtered.slice(0, 10);
 
     countBadge.textContent = top10.length;
 
