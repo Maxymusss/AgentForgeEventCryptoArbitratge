@@ -31,20 +31,35 @@
                 <span class="panel-icon">📡</span>
                 LIVE BID / ASK MATRIX
                 <span class="legend">
-                    <span class="legend-item"><span class="dot-green"></span>Lowest ASK (buy)</span>
-                    <span class="legend-item"><span class="dot-red"></span>Highest BID (sell)</span>
+                    <span class="legend-item"><span class="dot-green"></span>ASK (buy)</span>
+                    <span class="legend-item"><span class="dot-red"></span>BID (sell)</span>
                 </span>
+                <!-- Pair filter toggle -->
+                <button class="filter-btn" id="toggle-pairs-btn" onclick="togglePairSelector()">
+                    ⊞ PAIRS
+                </button>
             </div>
+
+            <!-- Pair checkboxes selector (hidden by default) -->
+            <div id="pair-selector" class="pair-selector" style="display:none;">
+                <div class="pair-selector-header">
+                    <span>FILTER PAIRS</span>
+                    <button class="small-btn" onclick="selectAllPairs()">ALL</button>
+                    <button class="small-btn" onclick="selectNoPairs()">NONE</button>
+                </div>
+                <div id="pair-checkboxes" class="pair-checkboxes"></div>
+            </div>
+
             <div class="panel-body">
                 <div id="price-grid" class="grid-container">
                     <div class="grid-header">
                         <span>PAIR</span>
-                        <span class="binance">BINANCE<br><span class="ex-sub">BID / ASK</span></span>
-                        <span class="coinbase">COINBASE<br><span class="ex-sub">BID / ASK</span></span>
-                        <span class="kraken">KRAKEN<br><span class="ex-sub">BID / ASK</span></span>
-                        <span class="bybit">BYBIT<br><span class="ex-sub">BID / ASK</span></span>
-                        <span class="okx">OKX<br><span class="ex-sub">BID / ASK</span></span>
-                        <span class="gateio">GATE<br><span class="ex-sub">BID / ASK</span></span>
+                        <span class="binance">BINANCE<br><span class="ex-sub">BID → ASK</span></span>
+                        <span class="coinbase">COINBASE<br><span class="ex-sub">BID → ASK</span></span>
+                        <span class="kraken">KRAKEN<br><span class="ex-sub">BID → ASK</span></span>
+                        <span class="bybit">BYBIT<br><span class="ex-sub">BID → ASK</span></span>
+                        <span class="okx">OKX<br><span class="ex-sub">BID → ASK</span></span>
+                        <span class="gateio">GATE<br><span class="ex-sub">BID → ASK</span></span>
                         <span>SPREAD<br><span class="ex-sub">BID−ASK %</span></span>
                     </div>
                     <div id="price-rows"></div>
@@ -59,11 +74,19 @@
                 ARBITRAGE OPPORTUNITIES
                 <span class="badge" id="opp-count">0</span>
             </div>
+
+            <!-- Filter buttons -->
+            <div class="filter-row">
+                <button class="filter-btn active" id="filter-all" onclick="setArbFilter('all')">ALL</button>
+                <button class="filter-btn" id="filter-profit" onclick="setArbFilter('profit')">PROFITABLE</button>
+                <button class="filter-btn" id="filter-top5" onclick="setArbFilter('top5')">TOP 5</button>
+            </div>
+
             <div class="panel-body">
                 <div id="arb-list" class="arb-list"></div>
                 <div id="no-opps" class="no-opps">
                     <span class="pulse-ring">◎</span>
-                    Scanning for opportunities...
+                    Scanning...
                 </div>
             </div>
         </section>

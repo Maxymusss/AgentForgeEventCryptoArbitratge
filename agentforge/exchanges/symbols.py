@@ -124,8 +124,11 @@ def normalize(symbol: str, to_exchange: Exchange) -> str | None:
 
 
 def _split_base_quote(symbol: str) -> tuple[str | None, str | None]:
-    """Split a plain symbol like BTCUSDT into (BTC, USDT)."""
-    for quote in _QUOTES:
+    """Split a plain symbol like BTCUSDT into (BTC, USDT).
+
+    Quotes are checked longest-first to avoid "BUSD" being matched as "USD" first.
+    """
+    for quote in sorted(_QUOTES, key=len, reverse=True):
         if symbol.endswith(quote):
             base = symbol[: -len(quote)]
             if base:

@@ -1,55 +1,33 @@
-// ─── AgentForge WebSocket Client — bid/ask version ─────────────────────────────────
+// ─── AgentForge — bid/ask per exchange per pair ─────────────────────────────────
 
 const WS_URL = `ws://${location.host}/ws/prices`;
 const EXCHANGES = ['binance', 'coinbase', 'kraken', 'bybit', 'okx', 'gateio'];
 
-// State: pair → { prices: { ex: { bid, ask } }, opps: [], timestamp }
 const state = {};
 const pairs = new Set();
-let tickCount = 0;
 let bestSpread = null;
 let lastUpdate = null;
 
 const $ = (id) => document.getElementById(id);
 
-// ─── WebSocket ───────────────────────────────────────────────────────────────
+// ─── WebSocket ──────────────────────────────────────────────────────────────
 
 function connect() {
     const ws = new WebSocket(WS_URL);
-
-    ws.onopen = () => {
-        updateStatus(true);
-        console.log('[WS] Connected');
+    ws.onopen = () => { updateStatus(true); };
+    ws.onmessage = (e) => {
+        if (e.data === 'pong') return;
+        try { handleTick(JSON.parse(e.data)); } catch(err) { console.error(err); }
     };
-
-    ws.onmessage = (event) => {
-        if (event.data === 'pong') return;
-        try {
-            handleTick(JSON.parse(event.data));
-        } catch (e) {
-            console.error('[WS] parse error:', e);
-        }
-    };
-
-    ws.onclose = () => {
-        updateStatus(false);
-        console.warn('[WS] disconnected — retrying in 3s');
-        setTimeout(connect, 3000);
-    };
-
-    ws.onerror = (err) => {
-        console.error('[WS] error:', err);
-        ws.close();
-    };
+    ws.onclose = () => { updateStatus(false); setTimeout(connect, 3000); };
+    ws.onerror = (err) => { console.error(err); ws.close(); };
 }
 
 function handleTick(msg) {
-    tickCount++;
     const { pair, prices, opportunities, timestamp } = msg;
     pairs.add(pair);
     state[pair] = { prices, opportunities, timestamp };
     lastUpdate = new Date();
-
     renderPriceGrid();
     renderArbList();
     updateStats();
@@ -68,94 +46,104 @@ function updateStatus(connected) {
     }
 }
 
-// ─── Price Grid — bid/ask per exchange ──────────────────────────────────────
-// For each pair:
-//   - Show ASK (what it costs to buy) for each exchange → GREEN = cheapest ASK
-//   - Show BID (what you get selling) for each exchange → RED = highest BID
-//   - Spread column: highest BID − lowest ASK
+// ─── Price Grid: bid/ask per exchange ─────────────────────────────────────────────
+// Layout per row:
+//   PAIR | BINANCE BID | BINANCE ASK | COINBASE BID | COINBASE ASK | ...
+//   Cell highlighting:
+//   - GREEN = lowest ASK across all exchanges (best to buy)
+//   - RED   = highest BID across all exchanges (best to sell)
 
 function renderPriceGrid() {
     const rows = $('price-rows');
     rows.innerHTML = '';
 
-    const allPairs = Array.from(pairs).sort();
+    const sortedPairs = Array.from(pairs).sort();
 
-    for (const pair of allPairs) {
+    for (const pair of sortedPairs) {
         const data = state[pair];
         if (!data || !data.prices) continue;
 
         const { prices } = data;
 
-        // Find lowest ASK across exchanges
-        const asks = EXCHANGES
-            .map(ex => ({ ex, ask: prices[ex]?.ask }))
-            .filter(x => x.ask !== null && x.ask !== undefined);
+        // Gather bids and asks across all exchanges
+        const allAsks = [];
+        const allBids = [];
+        for (const ex of EXCHANGES) {
+            const p = prices[ex];
+            if (!p) continue;
+            if (p.ask != null && p.ask !== 0 && !Number.isNaN(p.ask)) allAsks.push({ ex, ask: p.ask });
+            if (p.bid != null && p.bid !== 0 && !Number.isNaN(p.bid)) allBids.push({ ex, bid: p.bid });
+        }
 
-        // Find highest BID across exchanges
-        const bids = EXCHANGES
-            .map(ex => ({ ex, bid: prices[ex]?.bid }))
-            .filter(x => x.bid !== null && x.bid !== undefined);
-
-        const lowestAsk = asks.length ? asks.reduce((a, b) => a.ask < b.ask ? a : b) : null;
-        const highestBid = bids.length ? bids.reduce((a, b) => a.bid > b.bid ? a : b) : null;
+        const cheapestAsk = allAsks.length ? allAsks.reduce((a, b) => a.ask < b.ask ? a : b) : null;
+        const highestBid = allBids.length ? allBids.reduce((a, b) => a.bid > b.bid ? a : b) : null;
 
         // Spread = highest_bid - lowest_ask (executable arb spread)
         let spread = null;
-        if (highestBid && lowestAsk) {
-            spread = highestBid.bid - lowestAsk.ask;
-            spread = (spread / lowestAsk.ask) * 100;  // as %
+        if (highestBid && cheapestAsk) {
+            const gross = highestBid.bid - cheapestAsk.ask;
+            spread = (gross / cheapestAsk.ask) * 100;
         }
 
         const row = document.createElement('div');
         row.className = 'price-row';
-        row.id = `row-${pair}`;
 
-        let cells = [];
+        // Pair symbol
+        let cells = `<span class="pair-symbol">${pair}</span>`;
 
+        // Per-exchange: BID then ASK
         for (const ex of EXCHANGES) {
             const p = prices[ex];
             if (!p) {
-                cells.push('<span class="price-cell na">—</span>');
+                cells += '<span class="price-cell na">—</span><span class="price-cell na">—</span>';
                 continue;
             }
+
             const { bid, ask } = p;
 
-            if (ask !== null && ask !== undefined) {
-                // Show ASK price, color by cheapest/tallest
-                let cls = 'price-cell';
-                if (lowestAsk && ex === lowestAsk.ex) cls += ' cheapest-ask';
-                cells.push(`<span class="${cls}" title="ASK">${fmt(ask)}</span>`);
-            } else if (bid !== null && bid !== undefined) {
-                let cls = 'price-cell';
-                if (highestBid && ex === highestBid.ex) cls += ' highest-bid';
-                cells.push(`<span class="${cls}" title="BID">${fmt(bid)}</span>`);
+            // BID cell — skip 0 / NaN
+            const validBid = bid != null && bid !== 0 && !Number.isNaN(bid);
+            if (validBid) {
+                const isHighestBid = highestBid && highestBid.ex === ex;
+                const cls = 'price-cell' + (isHighestBid ? ' highest-bid' : '');
+                cells += `<span class="${cls}" title="${ex.toUpperCase()} BID">${fmt(bid)}</span>`;
             } else {
-                cells.push('<span class="price-cell na">—</span>');
+                cells += '<span class="price-cell na">—</span>';
+            }
+
+            // ASK cell — skip 0 / NaN
+            const validAsk = ask != null && ask !== 0 && !Number.isNaN(ask);
+            if (validAsk) {
+                const isCheapestAsk = cheapestAsk && cheapestAsk.ex === ex;
+                const cls = 'price-cell' + (isCheapestAsk ? ' cheapest-ask' : '');
+                cells += `<span class="${cls}" title="${ex.toUpperCase()} ASK">${fmt(ask)}</span>`;
+            } else {
+                cells += '<span class="price-cell na">—</span>';
             }
         }
 
+        // Spread cell
         if (spread !== null) {
             const cls = spread > 0 ? 'spread-cell positive' : 'spread-cell';
-            cells.push(`<span class="${cls}">${spread >= 0 ? '+' : ''}${spread.toFixed(4)}%</span>`);
+            cells += `<span class="${cls}">${spread >= 0 ? '+' : ''}${spread.toFixed(4)}%</span>`;
         } else {
-            cells.push('<span class="spread-cell">—</span>');
+            cells += '<span class="spread-cell">—</span>';
         }
 
-        row.innerHTML = `<span class="pair-symbol">${pair}</span>` + cells.join('');
+        row.innerHTML = cells;
         rows.appendChild(row);
     }
 }
 
-// ─── Arbitrage list: top 10 by spread ──────────────────────────────────────────
-// Shows: pair | buy @ LOWEST ASK → sell @ HIGHEST BID
+// ─── Arbitrage list: top 10 by spread ───────────────────────────────────────────
+// Buy at lowest ASK → sell at highest BID (executable)
 
 function renderArbList() {
     const list = $('arb-list');
     const noOpps = $('no-opps');
     const countBadge = $('opp-count');
 
-    // Collect spread per pair: buy at lowest ask, sell at highest bid
-    const pairData = [];
+    const rows = [];
 
     for (const pair of Object.keys(state)) {
         const data = state[pair];
@@ -163,41 +151,36 @@ function renderArbList() {
 
         const { prices } = data;
 
-        const asks = EXCHANGES
-            .map(ex => ({ ex, ask: prices[ex]?.ask }))
-            .filter(x => x.ask !== null && x.ask !== undefined);
+        const allAsks = EXCHANGES.map(ex => ({ ex, ask: prices[ex]?.ask })).filter(x => x.ask != null && x.ask !== 0 && !Number.isNaN(x.ask));
+        const allBids = EXCHANGES.map(ex => ({ ex, bid: prices[ex]?.bid })).filter(x => x.bid != null && x.bid !== 0 && !Number.isNaN(x.bid));
 
-        const bids = EXCHANGES
-            .map(ex => ({ ex, bid: prices[ex]?.bid }))
-            .filter(x => x.bid !== null && x.bid !== undefined);
+        if (!allAsks.length || !allBids.length) continue;
 
-        if (asks.length < 1 || bids.length < 1) continue;
-
-        const lowestAsk = asks.reduce((a, b) => a.ask < b.ask ? a : b);
-        const highestBid = bids.reduce((a, b) => a.bid > b.bid ? a : b);
+        const lowestAsk = allAsks.reduce((a, b) => a.ask < b.ask ? a : b);
+        const highestBid = allBids.reduce((a, b) => a.bid > b.bid ? a : b);
         if (lowestAsk.ex === highestBid.ex) continue;
 
-        const grossSpread = highestBid.bid - lowestAsk.ask;
-        const grossSpreadPct = (grossSpread / lowestAsk.ask) * 100;
-        const netProfit = grossSpreadPct - 0.20;  // approx 0.1% + 0.1% fees
+        const gross = highestBid.bid - lowestAsk.ask;
+        const grossPct = (gross / lowestAsk.ask) * 100;
+        const netPct = grossPct - 0.20; // ~0.1% + 0.1% in fees
 
-        pairData.push({
+        rows.push({
             pair,
-            buy_exchange: lowestAsk.ex,
-            sell_exchange: highestBid.ex,
+            buy_ex: lowestAsk.ex,
+            sell_ex: highestBid.ex,
             buy_price: lowestAsk.ask,
             sell_price: highestBid.bid,
-            spread: grossSpreadPct,
-            netProfit,
+            grossPct,
+            netPct,
         });
     }
 
-    pairData.sort((a, b) => b.spread - a.spread);
-    const top10 = pairData.slice(0, 10);
+    rows.sort((a, b) => b.grossPct - a.grossPct);
+    const top10 = rows.slice(0, 10);
 
     countBadge.textContent = top10.length;
 
-    if (top10.length === 0) {
+    if (!top10.length) {
         list.innerHTML = '';
         noOpps.style.display = 'flex';
         return;
@@ -208,34 +191,33 @@ function renderArbList() {
 
     for (const opp of top10) {
         const card = document.createElement('div');
-        card.className = 'arb-card' + (opp.spread > 0.05 ? ' high' : '');
-
+        card.className = 'arb-card' + (opp.grossPct > 0.05 ? ' high' : '');
         card.innerHTML = `
             <div class="arb-pair">${opp.pair}</div>
             <div class="arb-flow">
-                <span class="arb-exchange" style="background:${exColor(opp.buy_exchange)}">${opp.buy_exchange.toUpperCase()}</span>
+                <a class="arb-exchange" style="background:${exColor(opp.buy_ex)}" href="${exTradeUrl(opp.buy_ex, opp.pair)}" target="_blank" rel="noopener">${exLabel(opp.buy_ex)} ASK ↗</a>
                 <span class="arb-arrow">→</span>
-                <span class="arb-exchange" style="background:${exColor(opp.sell_exchange)}">${opp.sell_exchange.toUpperCase()}</span>
+                <a class="arb-exchange" style="background:${exColor(opp.sell_ex)}" href="${exTradeUrl(opp.sell_ex, opp.pair)}" target="_blank" rel="noopener">${exLabel(opp.sell_ex)} BID ↗</a>
             </div>
             <div class="arb-prices">
-                <span>${fmt(opp.buy_price)} ASK</span>
-                <span>${fmt(opp.sell_price)} BID</span>
+                <span class="ask-price">${fmt(opp.buy_price)} ASK</span>
+                <span class="bid-price">${fmt(opp.sell_price)} BID</span>
             </div>
             <div class="arb-metrics">
                 <div class="metric">
                     <span class="metric-label">SPREAD</span>
-                    <span class="metric-value spread">+${opp.spread.toFixed(4)}%</span>
+                    <span class="metric-value spread">+${opp.grossPct.toFixed(4)}%</span>
                 </div>
                 <div class="metric">
                     <span class="metric-label">NET PROFIT</span>
-                    <span class="metric-value profit">${opp.netProfit >= 0 ? '+' : ''}${opp.netProfit.toFixed(4)}%</span>
+                    <span class="metric-value profit">${opp.netPct >= 0 ? '+' : ''}${opp.netPct.toFixed(4)}%</span>
                 </div>
             </div>
         `;
         list.appendChild(card);
     }
 
-    if (top10.length > 0) bestSpread = top10[0].spread;
+    if (top10.length) bestSpread = top10[0].grossPct;
 }
 
 // ─── Stats ──────────────────────────────────────────────────────────────────
@@ -243,9 +225,9 @@ function renderArbList() {
 function updateStats() {
     $('stat-pairs').textContent = pairs.size;
     $('stat-best-spread').textContent =
-        bestSpread !== null ? `${bestSpread >= 0 ? '+' : ''}${bestSpread.toFixed(4)}%` : '—';
+        bestSpread != null ? `${bestSpread >= 0 ? '+' : ''}${bestSpread.toFixed(4)}%` : '—';
     $('stat-best-profit').textContent =
-        bestSpread !== null ? `${bestSpread - 0.2 >= 0 ? '+' : ''}${(bestSpread - 0.2).toFixed(4)}%` : '—';
+        bestSpread != null ? `${bestSpread - 0.2 >= 0 ? '+' : ''}${(bestSpread - 0.2).toFixed(4)}%` : '—';
     if (lastUpdate) $('stat-last').textContent = lastUpdate.toLocaleTimeString();
 }
 
@@ -253,23 +235,50 @@ function updateClock() {
     $('clock').textContent = new Date().toLocaleTimeString('en-GB', { hour12: false });
 }
 
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
 function exColor(ex) {
-    const c = {
-        binance: '#f0b90b', coinbase: '#0052ff', kraken: '#5741d9',
-        bybit: '#f7a800', okx: '#ffffff', gateio: '#17e78c'
-    };
+    const c = { binance:'#f0b90b', coinbase:'#0052ff', kraken:'#5741d9', bybit:'#f7a800', okx:'#ffffff', gateio:'#17e78c' };
     return c[ex] || '#333';
 }
 
-function fmt(v) {
-    if (v === null || v === undefined) return '—';
-    return v.toLocaleString('en-US', {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: v < 1 ? 6 : 4,
-    });
+function exLabel(ex) {
+    return { binance:'Binance', coinbase:'Coinbase', kraken:'Kraken', bybit:'Bybit', okx:'OKX', gateio:'Gate.io' }[ex] || ex;
 }
 
-// ─── Boot ───────────────────────────────────────────────────────────────────
+function exTradeUrl(exchange, pair) {
+    // Split BTCUSDT → base=BNB quote=USDT
+    const quotes = ['USDT','USDC','BUSD','BTC','ETH','USD','EUR','GBP'];
+    let base = pair, quote = 'USDT';
+    for (const q of quotes) {
+        if (pair.endsWith(q)) {
+            base = pair.slice(0, -q.length);
+            quote = q;
+            break;
+        }
+    }
+    // Coinbase uses USD not USDT
+    if (quote === 'USDT') quote = 'USD';
+    // Gate.io uses underscore
+    const qGate = quote === 'USD' ? 'USDT' : quote;
+
+    const urls = {
+        binance:  `https://www.binance.com/en/trade/${base}/${quote}`,
+        coinbase: `https://www.coinbase.com/trade/${base}-${quote}`,
+        kraken:   `https://www.kraken.com/en-gb/prices/${base.toLowerCase()}`,
+        bybit:    `https://www.bybit.com/trade/spot/${base}/${quote}`,
+        okx:      `https://www.okx.com/trade/spot/${base}-${quote}`,
+        gateio:   `https://www.gate.io/trade/${base.toLowerCase()}_${qGate.toLowerCase()}`,
+    };
+    return urls[exchange] || '#';
+}
+
+function fmt(v) {
+    if (v == null || v === 0 || Number.isNaN(v)) return '—';
+    return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: v < 1 ? 6 : 4 });
+}
+
+// ─── Boot ──────────────────────────────────────────────────────────────────
 
 setInterval(updateClock, 1000);
 updateClock();

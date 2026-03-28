@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -20,12 +22,15 @@ from ..exchanges import (
     Exchange,
 )
 from ..models import ArbitrageOpportunity
-from .arbitrage_web import find_arbitrage_opportunities
 
 logger = logging.getLogger("agentforge.web")
 
+_BASE_DIR = Path(__file__).resolve().parent.parent.parent
+_STATIC_DIR = _BASE_DIR / "agentforge" / "web" / "static"
+_TEMPLATE_DIR = _BASE_DIR / "agentforge" / "web" / "templates"
+
 app = FastAPI(title="AgentForge Dashboard")
-app.mount("/static", StaticFiles(directory="agentforge/web/static"), name="static")
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 _EXCHANGE_FETCHERS = {
     Exchange.BINANCE:  binance_bid_ask,
@@ -33,7 +38,7 @@ _EXCHANGE_FETCHERS = {
     Exchange.KRAKEN:   kraken_bid_ask,
     Exchange.BYBIT:    bybit_bid_ask,
     Exchange.OKX:      okx_bid_ask,
-    Exchange.GATEIO:   gateio_bid_ask,
+    Exchange.GATEIO:  gateio_bid_ask,
 }
 
 _ENABLED_EXCHANGES = [
@@ -41,7 +46,6 @@ _ENABLED_EXCHANGES = [
     if CONFIG.exchanges.get(e.value) and CONFIG.exchanges[e.value].enabled
 ]
 
-# Top 50 fallback pairs when CoinGecko is rate-limited
 _FALLBACK_PAIRS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT",
     "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "MATICUSDT",
@@ -83,30 +87,28 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-# ─── Price fetch loop ─────────────────────────────────────────────────────────
+# ─── Price fetch ────────────────────────────────────────────────────────────
 
 async def fetch_bid_asks(pair: str) -> dict[str, dict[str, float | None]]:
-    """Fetch bid/ask from all exchanges concurrently."""
-    result: dict[str, dict[str, float | None]] = {}
+    """Fetch bid/ask from all enabled exchanges concurrently."""
 
-    async def fetch_one(exchange: Exchange, fetcher):
+    async def fetch_one(exchange: Exchange, fetcher) -> tuple[str, dict[str, float | None]]:
         loop = asyncio.get_running_loop()
         bid, ask = await loop.run_in_executor(None, fetcher, pair)
         return exchange.value, {"bid": bid, "ask": ask}
 
     tasks = [fetch_one(ex, _EXCHANGE_FETCHERS[ex]) for ex in _ENABLED_EXCHANGES]
     results = await asyncio.gather(*tasks)
-    for ex_name, prices in results:
-        result[ex_name] = prices
-    return result
+    return dict(results)
 
 
 async def price_fetch_loop():
     """Continuously fetch bid/ask from all exchanges and broadcast to WebSocket clients."""
     from ..api.coingecko import get_top_coins, get_binance_symbol
 
-    # Try CoinGecko to get dynamic top-50 pairs
     loop = asyncio.get_running_loop()
+
+    # Try CoinGecko first for dynamic top-50
     coins = []
     for attempt in range(3):
         coins = await loop.run_in_executor(None, lambda: get_top_coins(limit=50))
@@ -125,42 +127,40 @@ async def price_fetch_loop():
         pairs = _FALLBACK_PAIRS
         logger.info("Using fallback list of %d pairs", len(pairs))
 
+    # Import arbitrage engine here to avoid circular import
+    from ..core.arbitrage import find_arbitrage_opportunities as find_opps
+
     while True:
         try:
             for pair in pairs:
                 bid_asks = await fetch_bid_asks(pair)
 
-                # Find arbitrage: buy at lowest ASK, sell at highest BID
-                arb_opps: list[dict[str, Any]] = []
+                # Build exchange enum → (bid, ask) for arbitrage engine
+                bid_ask_enums: dict[Exchange, tuple[float | None, float | None]] = {}
                 for ex_name, prices in bid_asks.items():
-                    bid = prices.get("bid")
-                    ask = prices.get("ask")
-                    if bid and ask:
-                        pass  # price data available
+                    for ex in _ENABLED_EXCHANGES:
+                        if ex.value == ex_name:
+                            bid_ask_enums[ex] = (prices.get("bid"), prices.get("ask"))
+                            break
 
-                # Run arbitrage detection using bid-ask engine
-                from ..models import Exchange as ExEnum
-                exchange_enum_map = {e.value: e for e in _ENABLED_EXCHANGES}
-                bid_ask_enums: dict[ExEnum, tuple[float | None, float | None]] = {}
-                for ex_name, prices in bid_asks.items():
-                    if ex_name in exchange_enum_map:
-                        ex = exchange_enum_map[ex_name]
-                        bid_ask_enums[ex] = (prices.get("bid"), prices.get("ask"))
+                opps: list[ArbitrageOpportunity] = find_opps(bid_ask_enums, pair)
 
-                opps = find_arbitrage_opportunities(bid_ask_enums, pair)
-                arb_opps = [
-                    {
-                        "buy_exchange": o.buy_exchange,
-                        "sell_exchange": o.sell_exchange,
-                        "pair": o.pair,
-                        "buy_price": o.buy_price,
-                        "sell_price": o.sell_price,
-                        "raw_spread_pct": o.raw_spread_pct,
-                        "profit_pct": o.profit_pct,
-                    }
-                    for o in opps
-                    if o.profit_pct > 0
-                ]
+                arb_opps = []
+                for o in opps:
+                    try:
+                        profit = getattr(o, "profit_pct", None)
+                        if profit is not None and profit > 0:
+                            arb_opps.append({
+                                "buy_exchange": getattr(o, "buy_exchange", ""),
+                                "sell_exchange": getattr(o, "sell_exchange", ""),
+                                "pair": getattr(o, "pair", pair),
+                                "buy_price": getattr(o, "buy_price", 0),
+                                "sell_price": getattr(o, "sell_price", 0),
+                                "raw_spread_pct": getattr(o, "raw_spread_pct", 0),
+                                "profit_pct": profit,
+                            })
+                    except Exception:
+                        pass
 
                 payload = {
                     "type": "tick",
@@ -187,7 +187,7 @@ async def startup():
 
 @app.get("/")
 async def root():
-    with open("agentforge/web/templates/dashboard.html") as f:
+    with open(_TEMPLATE_DIR / "dashboard.html") as f:
         return HTMLResponse(content=f.read())
 
 
