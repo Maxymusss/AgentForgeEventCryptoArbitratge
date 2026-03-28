@@ -88,13 +88,16 @@ agentforge/
 ├── alerts/
 │   └── telegram.py        # Telegram bot alert sender
 └── web/
-    ├── app.py             # FastAPI app + WebSocket broadcast
+    ├── app.py             # FastAPI app + WebSocket broadcast + settings API
     ├── arbitrage_web.py   # Web arbitrage engine helpers
     └── static/
         ├── app.js          # WebSocket client + live grid renderer
         ├── style.css       # Dark futuristic theme
         └── templates/
-            └── dashboard.html  # Main dashboard HTML
+            ├── dashboard.html  # Main dashboard HTML
+            └── settings.html   # Settings panel HTML
+
+settings.json               # Persisted settings (pairs, thresholds, Telegram)
 
 tests/
 ├── test_arbitrage.py
@@ -106,9 +109,23 @@ tests/
 - **Live bid/ask matrix** — per-exchange bid/ask per pair, updated every second
 - **Best prices highlighted** — green = cheapest ask (best buy), red = highest bid (best sell)
 - **Arbitrage opportunity cards** — sorted by gross spread, with direct trade links
-- **Clickable exchange links** — each opportunity shows live links to buy (ASK) and sell (BID) on the respective exchange
-- **Spread + net profit metrics** — gross spread % and fee-adjusted net profit %
+- **Clickable exchange links** — each opportunity shows live links to buy (ASK) and sell (BID) on the respective exchange — opens the exchange's trade page directly
+- **Spread + net profit + fee breakdown** — gross spread %, fee-adjusted net profit %, and per-exchange taker fees shown on each card
+- **Volume score + min order** — actionability score (0–100) and minimum order size per opportunity
 - **WebSocket streaming** — no page refresh needed, all clients update simultaneously
+- **Settings page** (`/settings`) — live Telegram toggle, profit threshold slider, and poll interval control without restarting
+
+### Settings page (`/settings`)
+
+Accessible via the ⚙ gear icon in the dashboard header. Lets you adjust:
+
+| Setting | Description |
+|---|---|
+| **Min Profit %** | Fire Telegram alert when net profit exceeds this threshold |
+| **Poll Interval** | How often to refresh prices (seconds) |
+| **Telegram Alerts** | Toggle bot alerts on/off without restarting |
+
+Settings are persisted to `settings.json` and applied immediately to the running server.
 
 ## How arbitrage works
 
